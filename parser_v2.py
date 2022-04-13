@@ -1,6 +1,3 @@
-import queue
-from urllib import request
-import requests
 import aiohttp
 import asyncio
 from urllib.parse import urlparse, urljoin
@@ -87,7 +84,7 @@ def parse_links(url_html):
         # страница без ссылок
         return []
     # ALL_COUNT += count
-    print(f"Парсер отработал , найдено {len(urls)} внутренних ссылок.")
+    print(f"Парсер отработал , найдено {count} внутренних ссылок.")
     return iter(urls)
 
 def lol(queue_urls):
@@ -104,4 +101,4 @@ def deep_crawl_website(base_url):
             print("Exit")
             return 
 
-deep_crawl_website('https://stackoverflow.com')
+deep_crawl_website('https://ru.hexlet.io')
