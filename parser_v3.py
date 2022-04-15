@@ -20,8 +20,10 @@ class Parser():
     # Структура для обмена <url>page_info</url> между ассинхронными функциями
     buffer_page_info = []
 
-    # Проверяем URL
+    def __init__(self, base_url) -> None:
+        self.base_url = base_url
 
+    # Проверяем URL
     def valid_url(self, url: str) -> bool:
         parsed = urlparse(url)
         return bool(parsed.netloc) and bool(parsed.scheme)
@@ -120,10 +122,14 @@ class Parser():
         print(f"\nПарсер отработал страницу {url}, найдено {count} внутренних ссылок.\n")
         return iter(urls)
 
-    def create_file_xml(self, base_url):
+    def get_name_file(self):
         now = datetime.now() 
         current_time = now.strftime("%H:%M:%S")
-        filename = f'sitemap_{urlparse(base_url).netloc}_{current_time}.xml'
+        filename = f'sitemap_{urlparse(self.base_url).netloc}_{current_time}.xml'
+        return filename
+
+    def create_file_xml(self):
+        filename = self.get_name_file()
         start = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
         with open(filename, "w") as file:
             file.write(start)
@@ -132,9 +138,9 @@ class Parser():
     def run_loop(self, queue_urls, file):
         asyncio.run(self.create_loop_and_session(queue_urls, file))
 
-    def deep_crawl_website(self, base_url):
-        file = self.create_file_xml(base_url)
-        iter_urls = [base_url,]
+    def deep_crawl_website(self):
+        file = self.create_file_xml()
+        iter_urls = [self.base_url,]
         while True:
             self.run_loop(iter_urls, file)
             if len(self.buffer_urls_and_html) > 0:
@@ -146,5 +152,5 @@ class Parser():
                 print(f"\nСкрипт завершил работу. Найдено {self.all_count} страниц")
                 return 
 
-lol = Parser()
-lol.deep_crawl_website('https://ru.hexlet.io')
+lol = Parser('https://ru.hexlet.io')
+lol.deep_crawl_website()
