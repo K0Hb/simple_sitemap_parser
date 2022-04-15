@@ -20,6 +20,8 @@ class Parser():
     # Структура для обмена <url>page_info</url> между ассинхронными функциями
     buffer_page_info = []
 
+    file_name = ''
+
     def __init__(self, base_url) -> None:
         self.base_url = base_url
 
@@ -37,13 +39,13 @@ class Parser():
         '''
         self.buffer_page_info.append(info)
 
-    async def write_xml(self, filename):
+    async def write_xml(self):
         try:
             info = self.buffer_page_info.pop()
         except IndexError:
             pass
         else:
-            async with aiofiles.open(filename, mode='a') as f:
+            async with aiofiles.open(self.file_name, mode='a') as f:
                 await f.write(info)
 
     async def get_html(self, session, url):
@@ -65,12 +67,12 @@ class Parser():
                 return respons
 
 
-    async def create_loop_and_session(self, url_list, file):
+    async def create_loop_and_session(self, url_list):
         async with aiohttp.ClientSession(connector = aiohttp.TCPConnector(verify_ssl=False)) as session:
             tasks = []
             for url in url_list:
                 task_request = asyncio.create_task(self.get_html(session, url))
-                task_write_xml = asyncio.create_task(self.write_xml(file))
+                task_write_xml = asyncio.create_task(self.write_xml())
                 tasks.append(task_request)
                 tasks.append(task_write_xml)
             await asyncio.gather(*tasks)
@@ -125,29 +127,29 @@ class Parser():
     def get_name_file(self):
         now = datetime.now() 
         current_time = now.strftime("%H:%M:%S")
-        filename = f'sitemap_{urlparse(self.base_url).netloc}_{current_time}.xml'
-        return filename
+        self.file_name = f'sitemap_{urlparse(self.base_url).netloc}_{current_time}.xml'
+        # return filename
 
     def create_file_xml(self):
-        filename = self.get_name_file()
+        self.get_name_file()
         start = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
-        with open(filename, "w") as file:
+        with open(self.file_name, "w") as file:
             file.write(start)
-        return filename
+        # return filename
 
-    def run_loop(self, queue_urls, file):
-        asyncio.run(self.create_loop_and_session(queue_urls, file))
+    def run_loop(self, queue_urls):
+        asyncio.run(self.create_loop_and_session(queue_urls))
 
     def deep_crawl_website(self):
-        file = self.create_file_xml()
+        self.create_file_xml()
         iter_urls = [self.base_url,]
         while True:
-            self.run_loop(iter_urls, file)
+            self.run_loop(iter_urls)
             if len(self.buffer_urls_and_html) > 0:
                 html = self.buffer_urls_and_html.pop()
                 iter_urls = self.parse_links(html)
             else:
-                with open(file, "a") as file:
+                with open(self.file_name, "a") as file:
                     file.write('</urlset>')
                 print(f"\nСкрипт завершил работу. Найдено {self.all_count} страниц")
                 return 
