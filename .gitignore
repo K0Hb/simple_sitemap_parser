@@ -1,0 +1,12 @@
+__pycache__/
+recup_dir.1
+*.pyc
+.vscode/
+.idea/
+.log/
+.env
+venv
+dist/
+.coverage
+coverage.xml
+*.xml

@@ -1,8 +1,9 @@
 import aiohttp
 import asyncio
+import aiofiles
+from datetime import datetime
 from urllib.parse import urlparse, urljoin
 from bs4 import BeautifulSoup
-
 
 ALL_URLS = set()
         
@@ -10,6 +11,7 @@ ALL_URLS = set()
 ALL_COUNT = 0
 
 BUFFER = []
+BUFFER_INFO = []
 
 # Проверяем URL
 
@@ -17,6 +19,23 @@ def valid_url(url):
     parsed = urlparse(url)
     return bool(parsed.netloc) and bool(parsed.scheme)
 
+def create_page_info(url, lastmode):
+    info = f'''
+    <url>
+      <loc>{url}</loc>
+      <lastmod>{lastmode}</lastmod>
+    </url>
+    '''
+    BUFFER_INFO.append(info)
+
+async def write_xml(filename):
+    try:
+        info = BUFFER_INFO.pop()
+    except IndexError:
+        pass
+    else:
+        async with aiofiles.open(filename, mode='a') as f:
+           await f.write(info)
 
 async def get_html(session, url):
         async with session.get(url, ssl=False) as resp:
@@ -27,21 +46,28 @@ async def get_html(session, url):
                 print(f'Статус {status}, URL {url}')
                 return None
             respons = await resp.text()
-            print(f'Статус {status}, URL {url}')
+            if 'last-modified' in resp.headers:
+                lastmod = resp.headers['Last-Modified']
+            else:
+                lastmod = resp.headers['Date']
+            print(f'Статус: {status}, URL: {url}, lastmode {lastmod}')
+            create_page_info(url, lastmod)
             BUFFER.append((url, respons))
             return respons
 
 
-async def create_loop_and_session(url_list):
+async def create_loop_and_session(url_list, file):
     async with aiohttp.ClientSession(connector = aiohttp.TCPConnector(verify_ssl=False)) as session:
         tasks = []
         for url in url_list:
-            task = asyncio.create_task(get_html(session, url))
-            tasks.append(task)
+            task_request = asyncio.create_task(get_html(session, url))
+            task_write_xml = asyncio.create_task(write_xml(file))
+            tasks.append(task_request)
+            tasks.append(task_write_xml)
         await asyncio.gather(*tasks)
 
     
-def parse_links(url_html):
+def parse_links(url_html, all_count=ALL_COUNT):
     url, html = url_html
     urls = set()
     count = 0
@@ -83,22 +109,34 @@ def parse_links(url_html):
     if len(urls) == 0:
         # страница без ссылок
         return []
-    # ALL_COUNT += count
-    print(f"Парсер отработал , найдено {count} внутренних ссылок.")
+    all_count += count
+    print(f"\nПарсер отработал страницу {url}, найдено {count} внутренних ссылок.\n")
     return iter(urls)
 
-def lol(queue_urls):
-    asyncio.run(create_loop_and_session(queue_urls))
+def create_file_xml(base_url):
+    now = datetime.now() 
+    current_time = now.strftime("%H:%M:%S")
+    filename = f'sitemap_{urlparse(base_url).netloc}_{current_time}.xml'
+    start = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+    with open(filename, "w") as file:
+        file.write(start)
+    return filename
+
+def run_loop(queue_urls, file):
+    asyncio.run(create_loop_and_session(queue_urls, file))
 
 def deep_crawl_website(base_url):
-    iter_urls = [base_url,]   
+    file = create_file_xml(base_url)
+    iter_urls = [base_url,]
     while True:
-        lol(iter_urls)
+        run_loop(iter_urls, file)
         if len(BUFFER) > 0:
             html = BUFFER.pop()
             iter_urls = parse_links(html)
         else:
-            print("Exit")
+            with open(file, "a") as file:
+                 file.write('</urlset>')
+            print(f"\nСкрипт завершил работу. Найдено {ALL_COUNT} страниц")
             return 
 
 deep_crawl_website('https://ru.hexlet.io')
