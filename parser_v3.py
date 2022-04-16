@@ -1,4 +1,5 @@
 from email import iterators
+import multiprocessing
 import aiohttp
 import asyncio
 import aiofiles
@@ -6,9 +7,12 @@ from datetime import datetime
 from urllib.parse import urlparse, urljoin
 from bs4 import BeautifulSoup
 from typing import List
+from multiprocessing import Pool
 
 
 class Parser():
+
+    max_page = 5000
 
     # Множество всех внутренних ссылок
     all_urls = set()
@@ -25,12 +29,14 @@ class Parser():
     # Имя xml файла 
     file_name_xml = ''
 
-    def __init__(self, base_url) -> None:
+    def __init__(self, base_url: str) -> None:
         self.base_url = base_url
 
     # Проверяем URL
     def valid_url(self, url: str) -> bool:
         "Проверяем валидность URL"
+        if len(url) > 100:
+            return False
         parsed = urlparse(url)
         return bool(parsed.netloc) and bool(parsed.scheme)
 
@@ -54,29 +60,35 @@ class Parser():
             async with aiofiles.open(self.file_name_xml, mode='a') as f:
                 await f.write(info)
 
+
     async def get_html(self, session, url: str) -> str:
             "Асинхронно деалем запрос по URL"
-            async with session.get(url, ssl=False) as resp:
-                try:
+            try:
+                async with session.get(url, ssl=False, timeout=10) as resp:
                     status = resp.status
-                    assert status == 200
-                except Exception:
-                    print(f'Статус {status}, URL {url}')
-                    return None
-                respons = await resp.text()
+                    respons = await resp.text()
+            except Exception as error:
+                print(f'\nОщибка: {error}, URL: {url}.\n')
+                return None
+            else:
+                lastmod = resp.headers.get('Date', None)
                 if 'last-modified' in resp.headers:
-                    lastmod = resp.headers['Last-Modified']
-                else:
-                    lastmod = resp.headers['Date']
+                    lastmod = resp.headers.get('Last-Modified')
                 print(f'Статус: {status}, URL: {url}, lastmode {lastmod}')
-                self.create_page_info(url, lastmod)
-                self.buffer_urls_and_html.append((url, respons))
-                return respons
+                if 200 >= status < 400: 
+                    self.create_page_info(url, lastmod)
+                    self.buffer_urls_and_html.append((url, respons))
+            return respons
 
 
     async def create_loop_and_session(self, url_list: iterators):
         "Формируем событий цикл с задачами"
-        async with aiohttp.ClientSession(connector = aiohttp.TCPConnector(verify_ssl=False)) as session:
+        timeout = aiohttp.ClientTimeout(total=10, sock_connect=25)
+        async with aiohttp.ClientSession(
+            requote_redirect_url= False,
+            timeout=timeout, 
+            connector = aiohttp.TCPConnector(verify_ssl=False),
+            ) as session:
             tasks = []
             for url in url_list:
                 task_request = asyncio.create_task(self.get_html(session, url))
@@ -93,12 +105,9 @@ class Parser():
         count = 0
         # извлекаем доменное имя из URL
         domain_name = urlparse(url).netloc
-        # print(html.headers)
         if html is None:
             return None
         soup = BeautifulSoup(html, "html.parser")
-        # for tag in soup.find_all('lastmod'):
-        #     print(tag)
         for a_tag in soup.findAll("a"):
             href = a_tag.attrs.get("href")
             if href == "" or href is None:
@@ -109,7 +118,6 @@ class Parser():
             parsed_href = urlparse(href)
             # удалить параметры URL GET, фрагменты URL и т. д.
             href = parsed_href.scheme + "://" + parsed_href.netloc + parsed_href.path
-            # print(href)
             if not self.valid_url(href):
                 # недействительный URL
                 continue
@@ -122,7 +130,6 @@ class Parser():
             if domain_name not in href:
                 # внешняя ссылка
                 continue
-            # print(f"[*] Internal link: {href}")
             count += 1
             urls.add(href)
             self.all_urls.add(href)
@@ -139,7 +146,7 @@ class Parser():
         now = datetime.now() 
         current_time = now.strftime("%H:%M:%S")
         self.file_name_xml = f'sitemap_{urlparse(self.base_url).netloc}_{current_time}.xml'
-        # return filename
+
 
     def create_file_xml(self) -> None:
         "Создаем xml файл"
@@ -147,26 +154,35 @@ class Parser():
         start = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
         with open(self.file_name_xml, "w") as file:
             file.write(start)
-        # return filename
 
     def run_loop(self, queue_urls: iterators) -> None:
         "Функция для запуска асинхронного событийного цикла "
         asyncio.run(self.create_loop_and_session(queue_urls))
 
-    def deep_crawl_website(self) -> None:
+    def run_multiprocess_parser(self):
+        with multiprocessing.Pool(multiprocessing.cpu_count()) as p:
+            p.map(self.parse_links, self.buffer_urls_and_html)
+            self.buffer_urls_and_html.clear()
+
+    def run_deep_crawl(self) -> None:
         self.create_file_xml()
         # В ТЗ просили использовать итераторы/генераторы 
         iter_urls = iter([self.base_url,])
         while True:
             self.run_loop(iter_urls)
-            if len(self.buffer_urls_and_html) > 0:
-                html = self.buffer_urls_and_html.pop()
-                iter_urls = self.parse_links(html)
+            if self.all_count <= self.max_page:
+                if len(self.buffer_urls_and_html) > 0:
+                    # self.run_multiprocess_parser()
+                    html = self.buffer_urls_and_html.pop()
+                    iter_urls = self.parse_links(html)
             else:
                 with open(self.file_name_xml, "a") as file:
                     file.write('</urlset>')
-                print(f"\nСкрипт завершил работу. Найдено {self.all_count} страниц")
-                return 
+                print(
+                    f"\nСкрипт завершил работу. Найдено: {self.all_count} страниц.",
+                    f"Sitemap записана в файл: {self.file_name_xml} ."
+                    )
+                return self.file_name_xml, self.all_count
 
-lol = Parser('https://ru.hexlet.io')
-lol.deep_crawl_website()
+lol = Parser('http://crawler-test.com/')
+lol.run_deep_crawl()
