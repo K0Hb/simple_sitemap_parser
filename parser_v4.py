@@ -2,12 +2,11 @@ from email import iterators
 import multiprocessing
 import aiohttp
 import asyncio
-import aiofiles
 from datetime import datetime
 from urllib.parse import urlparse, urljoin
 from bs4 import BeautifulSoup
 from typing import List
-from multiprocessing import Pool
+from multiprocessing import Manager
 
 
 class Parser():
@@ -27,10 +26,15 @@ class Parser():
     buffer_page_info = []
 
     # Имя xml файла 
-    file_name_xml = ''
+    file_name_xml = 'buffer.txt'
+
+    manager = Manager()
+
+    buffer_urls = manager.list()
 
     def __init__(self, base_url: str) -> None:
         self.base_url = base_url
+        self.file_name_xml = f'sitemap_{urlparse(base_url).netloc}.xml'
 
     # Проверяем URL
     def valid_url(self, url: str) -> bool:
@@ -40,25 +44,22 @@ class Parser():
         parsed = urlparse(url)
         return bool(parsed.netloc) and bool(parsed.scheme)
 
+
     def create_page_info(self, url: str, lastmode: str) ->None:
         "Формируем информацию о странице, для записи в xml файл"
         info = f'''
         <url>
-        <loc>{url}</loc>
-        <lastmod>{lastmode}</lastmod>
+            <loc>{url}</loc>
+            <lastmod>{lastmode}</lastmod>
         </url>
         '''
-        self.buffer_page_info.append(info)
+        self.write_xml(info)
 
-    async def write_xml(self) -> None:
-        "Асинхронно пишем в xml файл"
-        try:
-            info = self.buffer_page_info.pop()
-        except IndexError:
-            pass
-        else:
-            async with aiofiles.open(self.file_name_xml, mode='a') as f:
-                await f.write(info)
+
+    def write_xml(self, text: str) -> None:
+        file_name = self.file_name_xml
+        with open(file_name, mode='a') as f:
+            f.write(text)
 
 
     async def get_html(self, session, url: str) -> str:
@@ -75,13 +76,17 @@ class Parser():
                 if 'last-modified' in resp.headers:
                     lastmod = resp.headers.get('Last-Modified')
                 print(f'Статус: {status}, URL: {url}, lastmode {lastmod}')
-                if 200 >= status < 400: 
+                if 200 >= status < 400:
+                    # Общее множество URL-ов
+                    self.all_urls.add(url)
+                    # Счетчик обработанных страниц
+                    self.all_count += 1
                     self.create_page_info(url, lastmod)
                     self.buffer_urls_and_html.append((url, respons))
             return respons
 
 
-    async def create_loop_and_session(self, url_list: iterators):
+    async def create_loop_and_session(self) -> None:
         "Формируем событий цикл с задачами"
         timeout = aiohttp.ClientTimeout(total=10, sock_connect=25)
         async with aiohttp.ClientSession(
@@ -90,11 +95,10 @@ class Parser():
             connector = aiohttp.TCPConnector(verify_ssl=False),
             ) as session:
             tasks = []
-            for url in url_list:
-                task_request = asyncio.create_task(self.get_html(session, url))
-                task_write_xml = asyncio.create_task(self.write_xml())
-                tasks.append(task_request)
-                tasks.append(task_write_xml)
+            for iter_urls in self.buffer_urls:
+                for url in iter_urls:
+                    task_request = asyncio.create_task(self.get_html(session, url))
+                    tasks.append(task_request)
             await asyncio.gather(*tasks)
 
         
@@ -132,57 +136,51 @@ class Parser():
                 continue
             count += 1
             urls.add(href)
-            self.all_urls.add(href)
         if len(urls) == 0:
             # страница без ссылок
             return []
-        self.all_count += count
-        print(f"\nПарсер отработал страницу {url}, найдено {count} внутренних ссылок.\n")
+        print(f"На {url}, найдено {count} внутренних ссылки.")
         # В ТЗ просили использовать итераторы/генераторы
-        return iter(urls)
-
-    def create_name_file(self) -> None:
-        "Формируем имя xml файла"
-        now = datetime.now() 
-        current_time = now.strftime("%H:%M:%S")
-        self.file_name_xml = f'sitemap_{urlparse(self.base_url).netloc}_{current_time}.xml'
+        self.buffer_urls.append(urls)
+        return urls
 
 
-    def create_file_xml(self) -> None:
+    def create_files(self) -> None:
         "Создаем xml файл"
-        self.create_name_file()
         start = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
         with open(self.file_name_xml, "w") as file:
             file.write(start)
 
-    def run_loop(self, queue_urls: iterators) -> None:
+    def run_loop_requests(self) -> None:
         "Функция для запуска асинхронного событийного цикла "
-        asyncio.run(self.create_loop_and_session(queue_urls))
+        asyncio.run(self.create_loop_and_session())
 
-    def run_multiprocess_parser(self):
+
+    def run_multiprocess_parser(self) -> None:
+        manager = Manager()
+        self.buffer_urls = manager.list()
         with multiprocessing.Pool(multiprocessing.cpu_count()) as p:
             p.map(self.parse_links, self.buffer_urls_and_html)
-            self.buffer_urls_and_html.clear()
+            p.close()
+            p.join()
 
-    def run_deep_crawl(self) -> None:
-        self.create_file_xml()
-        # В ТЗ просили использовать итераторы/генераторы 
-        iter_urls = iter([self.base_url,])
-        while True:
-            self.run_loop(iter_urls)
-            if self.all_count <= self.max_page:
-                if len(self.buffer_urls_and_html) > 0:
-                    # self.run_multiprocess_parser()
-                    html = self.buffer_urls_and_html.pop()
-                    iter_urls = self.parse_links(html)
-            else:
-                with open(self.file_name_xml, "a") as file:
-                    file.write('</urlset>')
-                print(
-                    f"\nСкрипт завершил работу. Найдено: {self.all_count} страниц.",
-                    f"Sitemap записана в файл: {self.file_name_xml} ."
-                    )
-                return self.file_name_xml, self.all_count
+
+    def new(self) -> None:
+        start = datetime.now()
+        self.create_files()
+        self.buffer_urls.append((self.base_url,))
+        while self.all_count < self.max_page:
+            self.run_loop_requests()
+            self.run_multiprocess_parser()
+        self.write_xml('</urlset>')
+        self.final_time = datetime.now() - start
+        print(f"""
+        Sitemap сформирован.\n
+        Файл: {self.file_name_xml}.\n
+        Кол-во страниц: {self.all_count}.\n
+        Время работы: {self.final_time}
+        """)
+        return self.file_name_xml, self.all_count, 
 
 lol = Parser('http://crawler-test.com/')
-lol.run_deep_crawl()
+lol.new()
